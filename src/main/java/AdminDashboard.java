@@ -11,7 +11,6 @@ import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,25 +31,20 @@ public class AdminDashboard extends JFrame {
             String password = new String(passwordField.getPassword());
             String role = (String) roleComboBox.getSelectedItem();
 
-            // Validate inputs
             if (username.isEmpty() || password.isEmpty() || role == null) {
                 JOptionPane.showMessageDialog(null, "Please provide valid username, password, and role.");
                 return;
             }
 
-            // Create a document for the new user
             Document userDoc = new Document("username", username)
                     .append("password", password)
                     .append("role", role);
 
-            // Insert the new user into the users collection
             MongoCollection<Document> userCollection = MongoDBUtil.getCollection("users");
             userCollection.insertOne(userDoc);
 
-            // Show success message
             JOptionPane.showMessageDialog(null, "User added successfully!");
 
-            // Refresh the user table
             loadUsersFromDatabase();
         }
     }
@@ -169,6 +163,18 @@ public class AdminDashboard extends JFrame {
             loadBooksFromDatabase();
         }
     }
+
+    private void refreshUserDropdowns(JComboBox<String> lendingUserComboBox, JComboBox<String> returnUserComboBox) {
+        String[] updatedUsers = getUsernamesFromDatabase();
+        lendingUserComboBox.removeAllItems();
+        returnUserComboBox.removeAllItems();
+
+        for (String username : updatedUsers) {
+            lendingUserComboBox.addItem(username);
+            returnUserComboBox.addItem(username);
+        }
+    }
+
 
     class DeleteBookActionListener implements ActionListener {
         @Override
@@ -363,16 +369,19 @@ public class AdminDashboard extends JFrame {
 
         bookPanel.add(addBookPanel, BorderLayout.NORTH);
 
-        // Search Panel
-        JPanel searchPanel = new JPanel();
-        searchPanel.setLayout(new FlowLayout());
-        searchPanel.add(new JLabel("Search by Title, Author, Genre:"));
-        searchField = new JTextField(15);
-        searchPanel.add(searchField);
-        searchButton = new JButton("Search");
-        searchButton.addActionListener(new SearchBookActionListener());
-        searchPanel.add(searchButton);
-        bookPanel.add(searchPanel, BorderLayout.SOUTH);
+        JPanel filterPanel = new JPanel();
+        filterPanel.setLayout(new FlowLayout());
+        filterPanel.add(new JLabel("Filter by Genre:"));
+
+        JComboBox<String> genreFilterComboBox = new JComboBox<>(getUniqueGenres());
+        filterPanel.add(genreFilterComboBox);
+
+        genreFilterComboBox.addActionListener(e -> {
+            String selectedGenre = (String) genreFilterComboBox.getSelectedItem();
+            filterBooksByGenre(selectedGenre);
+        });
+
+        bookPanel.add(filterPanel, BorderLayout.SOUTH);
 
         // Table for books
         String[] bookColumnNames = { "Title", "Author", "Genre", "Quantity" };
@@ -384,6 +393,35 @@ public class AdminDashboard extends JFrame {
         return bookPanel;
     }
 
+    // Helper method to filter books by genre
+    private void filterBooksByGenre(String genre) {
+        MongoCollection<Document> bookCollection = MongoDBUtil.getCollection("books");
+
+        bookTableModel.setRowCount(0); // Clear current rows
+        FindIterable<Document> books;
+        if ("All".equals(genre)) {
+            books = bookCollection.find(); // Show all books
+        } else {
+            books = bookCollection.find(new Document("genre", genre));
+        }
+
+        for (Document book : books) {
+            String title = book.getString("title");
+            String author = book.getString("author");
+            String bookGenre = book.getString("genre");
+            int quantity = book.getInteger("quantity");
+            bookTableModel.addRow(new Object[]{title, author, bookGenre, quantity});
+        }
+    }
+
+    private String[] getUniqueGenres() {
+        MongoCollection<Document> bookCollection = MongoDBUtil.getCollection("books");
+        List<String> genres = bookCollection.distinct("genre", String.class).into(new ArrayList<>());
+        genres.add(0, "All"); // Add an "All" option to show all books
+        return genres.toArray(new String[0]);
+    }
+
+
     // Create the Lending Panel
     private JPanel createLendingPanel() {
         JPanel lendingPanel = new JPanel();
@@ -393,68 +431,113 @@ public class AdminDashboard extends JFrame {
         JPanel lendBookPanel = new JPanel();
         lendBookPanel.setLayout(new FlowLayout());
 
-        // Username selection
         lendBookPanel.add(new JLabel("Username:"));
         JComboBox<String> userComboBox = new JComboBox<>(getUsernamesFromDatabase());
         lendBookPanel.add(userComboBox);
 
-        // Book selection
+        lendBookPanel.add(new JLabel("Filter by Genre:"));
+        JComboBox<String> genreFilterComboBox = new JComboBox<>(getUniqueGenres());
+        lendBookPanel.add(genreFilterComboBox);
+
         lendBookPanel.add(new JLabel("Book:"));
-        JComboBox<String> bookComboBox = new JComboBox<>(getBooksFromDatabase());
+        JComboBox<String> bookComboBox = new JComboBox<>();
         lendBookPanel.add(bookComboBox);
 
-        // Lend Book button
+        // Populate books when a genre is selected
+        genreFilterComboBox.addActionListener(e -> {
+            String selectedGenre = (String) genreFilterComboBox.getSelectedItem();
+            updateBooksByGenre(selectedGenre, bookComboBox);
+        });
+
         JButton lendBookButton = new JButton("Lend Book");
         lendBookButton.addActionListener(new LendBookActionListener(userComboBox, bookComboBox));
         lendBookPanel.add(lendBookButton);
 
         lendingPanel.add(lendBookPanel, BorderLayout.NORTH);
 
-        // Table for Lending Information
         String[] lendingColumnNames = { "Username", "Book Title", "Lend Date", "Return Date" };
         lendingTableModel = new DefaultTableModel(lendingColumnNames, 0);
         lendingTable = new JTable(lendingTableModel);
         lendingPanel.add(new JScrollPane(lendingTable), BorderLayout.CENTER);
 
-        loadLendingData(); // Implement this method
+        loadLendingData();
         return lendingPanel;
     }
+
+    // Helper method to update books by genre
+    private void updateBooksByGenre(String genre, JComboBox<String> bookComboBox) {
+        MongoCollection<Document> bookCollection = MongoDBUtil.getCollection("books");
+        FindIterable<Document> books;
+        if ("All".equals(genre)) {
+            books = bookCollection.find();
+        } else {
+            books = bookCollection.find(new Document("genre", genre));
+        }
+
+        bookComboBox.removeAllItems(); // Clear current items
+        for (Document book : books) {
+            bookComboBox.addItem(book.getString("title"));
+        }
+    }
+
 
     // Create the Return Panel
     private JPanel createReturnPanel() {
         JPanel returnPanel = new JPanel();
         returnPanel.setLayout(new BorderLayout());
 
-        // Return Book Panel
         JPanel returnBookPanel = new JPanel();
         returnBookPanel.setLayout(new FlowLayout());
 
-        // Username selection
         returnBookPanel.add(new JLabel("Username:"));
         JComboBox<String> returnUserComboBox = new JComboBox<>(getUsernamesFromDatabase());
         returnBookPanel.add(returnUserComboBox);
 
-        // Book selection
+        returnBookPanel.add(new JLabel("Filter by Genre:"));
+        JComboBox<String> genreFilterComboBox = new JComboBox<>(getUniqueGenres());
+        returnBookPanel.add(genreFilterComboBox);
+
         returnBookPanel.add(new JLabel("Book:"));
-        JComboBox<String> returnBookComboBox = new JComboBox<>(getBooksFromDatabase());
+        JComboBox<String> returnBookComboBox = new JComboBox<>();
         returnBookPanel.add(returnBookComboBox);
 
-        // Return Book button
+        genreFilterComboBox.addActionListener(e -> {
+            String selectedGenre = (String) genreFilterComboBox.getSelectedItem();
+            updateBooksByGenre(selectedGenre, returnBookComboBox);
+        });
+
         JButton returnBookButton = new JButton("Return Book");
         returnBookButton.addActionListener(new ReturnBookActionListener(returnUserComboBox, returnBookComboBox));
         returnBookPanel.add(returnBookButton);
 
         returnPanel.add(returnBookPanel, BorderLayout.NORTH);
 
-        // Table for Returned Books
         String[] returnColumnNames = { "Username", "Book Title", "Return Date" };
         returnTableModel = new DefaultTableModel(returnColumnNames, 0);
         returnTable = new JTable(returnTableModel);
         returnPanel.add(new JScrollPane(returnTable), BorderLayout.CENTER);
 
-        loadReturnedBooksData(); // Implement this method
+        loadReturnedBooksData();
         return returnPanel;
     }
+
+    private void updateBooksLentToUser(String username, JComboBox<String> returnBookComboBox) {
+        MongoCollection<Document> lendingCollection = MongoDBUtil.getCollection("lendings");
+        FindIterable<Document> lentBooks = lendingCollection.find(new Document("username", username));
+
+        // Clear the current items in the combo box
+        returnBookComboBox.removeAllItems();
+
+        for (Document lentBook : lentBooks) {
+            String bookTitle = lentBook.getString("bookTitle");
+            returnBookComboBox.addItem(bookTitle);
+        }
+
+        if (returnBookComboBox.getItemCount() == 0) {
+            JOptionPane.showMessageDialog(null, "This user has no books to return.");
+        }
+    }
+
 
     // Action Listener for Lending Books
     private class LendBookActionListener implements ActionListener {
@@ -471,17 +554,37 @@ public class AdminDashboard extends JFrame {
             String username = (String) userComboBox.getSelectedItem();
             String bookTitle = (String) bookComboBox.getSelectedItem();
 
-            // Add to MongoDB lending collection
-            MongoCollection<Document> lendingCollection = MongoDBUtil.getCollection("lendings");
-            Document lendRecord = new Document("username", username)
-                    .append("bookTitle", bookTitle)
-                    .append("lendDate", "2024-11-20") // Current date, adjust as needed
-                    .append("returnDate", "2024-11-27"); // Adjust return date
+            MongoCollection<Document> bookCollection = MongoDBUtil.getCollection("books");
+            Document book = bookCollection.find(new Document("title", bookTitle)).first();
 
-            lendingCollection.insertOne(lendRecord);
-            loadLendingData();
+            if (book != null) {
+                int quantity = book.getInteger("quantity");
+                if (quantity > 0) {
+                    // Reduce quantity by 1
+                    bookCollection.updateOne(new Document("title", bookTitle),
+                            new Document("$set", new Document("quantity", quantity - 1)));
+
+                    // Add to MongoDB lending collection
+                    MongoCollection<Document> lendingCollection = MongoDBUtil.getCollection("lendings");
+                    Document lendRecord = new Document("username", username)
+                            .append("bookTitle", bookTitle)
+                            .append("lendDate", LocalDate.now().toString())
+                            .append("returnDate", LocalDate.now().plusDays(7).toString()); // Default lending period is 1 week
+
+                    lendingCollection.insertOne(lendRecord);
+                    JOptionPane.showMessageDialog(null, "Book lent successfully!");
+
+                    loadLendingData();
+                    loadBooksFromDatabase(); // Refresh book table
+                } else {
+                    JOptionPane.showMessageDialog(null, "Book is out of stock!");
+                }
+            } else {
+                JOptionPane.showMessageDialog(null, "Book not found!");
+            }
         }
     }
+
 
 
 
@@ -500,16 +603,44 @@ public class AdminDashboard extends JFrame {
             String username = (String) returnUserComboBox.getSelectedItem();
             String bookTitle = (String) returnBookComboBox.getSelectedItem();
 
-            // Add to MongoDB returns collection
-            MongoCollection<Document> returnCollection = MongoDBUtil.getCollection("returns");
-            Document returnRecord = new Document("username", username)
-                    .append("bookTitle", bookTitle)
-                    .append("returnDate", "2024-11-20"); // Current date
+            if (bookTitle == null) {
+                JOptionPane.showMessageDialog(null, "No book selected for return.");
+                return;
+            }
 
-            returnCollection.insertOne(returnRecord);
-            loadReturnedBooksData();
+            MongoCollection<Document> bookCollection = MongoDBUtil.getCollection("books");
+            Document book = bookCollection.find(new Document("title", bookTitle)).first();
+
+            if (book != null) {
+                int quantity = book.getInteger("quantity");
+                // Increase quantity by 1
+                bookCollection.updateOne(new Document("title", bookTitle),
+                        new Document("$set", new Document("quantity", quantity + 1)));
+
+                // Remove the book from the lending collection
+                MongoCollection<Document> lendingCollection = MongoDBUtil.getCollection("lendings");
+                lendingCollection.deleteOne(new Document("username", username).append("bookTitle", bookTitle));
+
+                // Add the return record to the returns collection
+                MongoCollection<Document> returnCollection = MongoDBUtil.getCollection("returns");
+                Document returnRecord = new Document("username", username)
+                        .append("bookTitle", bookTitle)
+                        .append("returnDate", LocalDate.now().toString());
+
+                returnCollection.insertOne(returnRecord);
+                JOptionPane.showMessageDialog(null, "Book returned successfully!");
+
+                // Refresh UI components
+                loadReturnedBooksData();
+                updateBooksLentToUser(username, returnBookComboBox); // Update books available for return
+                loadBooksFromDatabase(); // Refresh book table
+            } else {
+                JOptionPane.showMessageDialog(null, "Book not found!");
+            }
         }
     }
+
+
 
     // Load Lending Data from MongoDB
     private void loadLendingData() {
@@ -536,12 +667,29 @@ public class AdminDashboard extends JFrame {
         }
     }
 
+
     private String[] getUsernamesFromDatabase() {
-        return new String[] {"User1", "User2", "User3"};
+        MongoCollection<Document> userCollection = MongoDBUtil.getCollection("users");
+        // Use 'into' to convert the MongoIterable to a List
+        List<String> usernamesList = userCollection.find()
+                .map(user -> user.getString("username"))
+                .into(new ArrayList<>());
+
+        // Convert the List to an array
+        return usernamesList.toArray(new String[0]);
     }
 
+
+    // Get all books for combo box
     private String[] getBooksFromDatabase() {
-        return new String[] {"Book1", "Book2", "Book3"};
+        MongoCollection<Document> booksCollection = MongoDBUtil.getCollection("books");
+        // Use 'into' to convert the MongoIterable to a List
+        List<String> booksList = booksCollection.find()
+                .map(book -> book.getString("title"))
+                .into(new ArrayList<>());
+
+        // Convert the List to an array
+        return booksList.toArray(new String[0]);
     }
 
     private void loadUsersFromDatabase() {
